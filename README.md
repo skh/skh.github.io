@@ -1,1 +1,1 @@
-[/vowel_chart.html](Vowel chart)
+[Vowel Chart](https://skh.github.io/vowel_chart.html)
