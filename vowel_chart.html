@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Live Vowel Chart</title>
+<style>
+  body {
+    font-family: system-ui, sans-serif;
+    background: #f7f5f0;
+    color: #222;
+    margin: 0;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  h1 { font-weight: 500; margin: 0 0 6px 0; }
+  .sub { color: #666; margin-bottom: 16px; font-size: 14px; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    align-items: center;
+    margin-bottom: 12px;
+    max-width: 700px;
+  }
+  .controls label { font-size: 14px; color: #444; }
+  .controls select, .controls button {
+    font-size: 14px;
+    padding: 6px 12px;
+    border: 1px solid #888;
+    background: #fff;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .controls button:hover, .controls select:hover { background: #eee; }
+  #status { color: #666; font-size: 14px; }
+  canvas {
+    background: #fff;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    display: block;
+  }
+  #spec { margin-top: 10px; }
+  #readout {
+    margin-top: 10px;
+    font-family: ui-monospace, monospace;
+    font-size: 13px;
+    color: #444;
+  }
+  details { margin-top: 16px; max-width: 700px; font-size: 14px; color: #444; }
+  summary { cursor: pointer; }
+</style>
+</head>
+<body>
+
+<h1>Live Vowel Chart</h1>
+<div class="sub">Speak a sustained vowel. The dot tracks F1 / F2 from the cepstrally-smoothed spectral envelope.</div>
+
+<div class="controls">
+  <button id="startBtn">Start microphone</button>
+  <span id="status">stopped</span>
+</div>
+
+<div class="controls">
+  <label>Language:
+    <select id="langSel">
+      <option value="ipa">IPA cardinal vowels</option>
+      <option value="de">German</option>
+      <option value="en">English (General American)</option>
+      <option value="tr">Turkish</option>
+      <option value="uk">Ukrainian</option>
+    </select>
+  </label>
+  <label>Voice scaling:
+    <select id="sexSel">
+      <option value="male">Adult male (default)</option>
+      <option value="female">Adult female (×1.17)</option>
+    </select>
+  </label>
+</div>
+
+<canvas id="chart" width="700" height="500"></canvas>
+<canvas id="spec"  width="700" height="160"></canvas>
+<div id="readout">F0: —   F1: —   F2: —</div>
+
+<details>
+<summary>How it works / tips</summary>
+<p>
+Audio is captured, an FFT is computed, then the log spectrum is cepstrally liftered:
+the high-quefrency part of the cepstrum (which carries pitch and harmonic structure)
+is zeroed out, leaving only the spectral envelope. Formants are picked as the two
+strongest prominent peaks of that envelope above F0.
+</p>
+<p>
+The voice scaling toggle multiplies reference F1/F2 by 1.17 for adult female voices.
+Detection itself doesn't depend on language or sex — those only move the reference
+circles. Your dot is your real F1/F2.
+</p>
+</details>
+
+<script>
+// ---------- Reference vowel sets (adult-male averages, Hz) ----------
+const VOWEL_SETS = {
+  ipa: {
+    name: 'IPA cardinal vowels',
+    vowels: [
+      { ipa: 'i',  f1: 280,  f2: 2250 },
+      { ipa: 'e',  f1: 400,  f2: 2100 },
+      { ipa: 'ɛ',  f1: 550,  f2: 1900 },
+      { ipa: 'a',  f1: 850,  f2: 1610 },
+      { ipa: 'ɑ',  f1: 750,  f2: 1100 },
+      { ipa: 'ɔ',  f1: 600,  f2: 900  },
+      { ipa: 'o',  f1: 450,  f2: 850  },
+      { ipa: 'u',  f1: 300,  f2: 800  },
+      { ipa: 'y',  f1: 280,  f2: 1900 },
+      { ipa: 'ø',  f1: 400,  f2: 1700 },
+      { ipa: 'œ',  f1: 550,  f2: 1500 },
+      { ipa: 'ɶ',  f1: 850,  f2: 1400 },
+      { ipa: 'ɒ',  f1: 750,  f2: 950  },
+      { ipa: 'ʌ',  f1: 600,  f2: 1200 },
+      { ipa: 'ɤ',  f1: 450,  f2: 1300 },
+      { ipa: 'ɯ',  f1: 300,  f2: 1400 },
+    ]
+  },
+  de: {
+    name: 'German',
+    vowels: [
+      { ipa: 'iː', f1: 280,  f2: 2300 },
+      { ipa: 'ɪ',  f1: 380,  f2: 2000 },
+      { ipa: 'eː', f1: 350,  f2: 2150 },
+      { ipa: 'ɛ',  f1: 550,  f2: 1900 },
+      { ipa: 'ɛː', f1: 600,  f2: 1850 },
+      { ipa: 'aː', f1: 750,  f2: 1300 },
+      { ipa: 'a',  f1: 700,  f2: 1450 },
+      { ipa: 'oː', f1: 380,  f2: 750  },
+      { ipa: 'ɔ',  f1: 550,  f2: 950  },
+      { ipa: 'uː', f1: 290,  f2: 750  },
+      { ipa: 'ʊ',  f1: 400,  f2: 950  },
+      { ipa: 'yː', f1: 290,  f2: 1850 },
+      { ipa: 'ʏ',  f1: 380,  f2: 1700 },
+      { ipa: 'øː', f1: 380,  f2: 1600 },
+      { ipa: 'œ',  f1: 530,  f2: 1500 },
+      { ipa: 'ə',  f1: 500,  f2: 1500 },
+    ]
+  },
+  en: {
+    name: 'English (General American)',
+    vowels: [
+      { ipa: 'i',  f1: 342,  f2: 2322 },
+      { ipa: 'ɪ',  f1: 427,  f2: 2034 },
+      { ipa: 'e',  f1: 476,  f2: 2089 },
+      { ipa: 'ɛ',  f1: 580,  f2: 1799 },
+      { ipa: 'æ',  f1: 588,  f2: 1952 },
+      { ipa: 'ɑ',  f1: 768,  f2: 1333 },
+      { ipa: 'ɔ',  f1: 652,  f2: 997  },
+      { ipa: 'o',  f1: 497,  f2: 910  },
+      { ipa: 'ʊ',  f1: 469,  f2: 1122 },
+      { ipa: 'u',  f1: 378,  f2: 997  },
+      { ipa: 'ʌ',  f1: 623,  f2: 1200 },
+      { ipa: 'ə',  f1: 500,  f2: 1500 },
+    ]
+  },
+  tr: {
+    name: 'Turkish',
+    vowels: [
+      { ipa: 'i',  f1: 290,  f2: 2200 },
+      { ipa: 'y',  f1: 290,  f2: 1900 },
+      { ipa: 'ɯ',  f1: 320,  f2: 1300 },
+      { ipa: 'u',  f1: 320,  f2: 800  },
+      { ipa: 'e',  f1: 530,  f2: 1900 },
+      { ipa: 'œ',  f1: 530,  f2: 1600 },
+      { ipa: 'a',  f1: 720,  f2: 1300 },
+      { ipa: 'o',  f1: 530,  f2: 950  },
+    ]
+  },
+  uk: {
+    name: 'Ukrainian',
+    vowels: [
+      { ipa: 'і',  f1: 300,  f2: 2200 },
+      { ipa: 'и',  f1: 400,  f2: 1800 },
+      { ipa: 'е',  f1: 550,  f2: 1750 },
+      { ipa: 'а',  f1: 750,  f2: 1300 },
+      { ipa: 'о',  f1: 500,  f2: 900  },
+      { ipa: 'у',  f1: 320,  f2: 800  },
+    ]
+  },
+};
+
+const F1_MIN = 200, F1_MAX = 1100;
+const F2_MIN = 500, F2_MAX = 2700;
+
+const chart = document.getElementById('chart');
+const cctx  = chart.getContext('2d');
+const spec  = document.getElementById('spec');
+const sctx  = spec.getContext('2d');
+const W = chart.width, H = chart.height, PAD = 60;
+const SW = spec.width, SH = spec.height;
+
+function f1ToY(f1) { return PAD + (f1 - F1_MIN) / (F1_MAX - F1_MIN) * (H - 2*PAD); }
+function f2ToX(f2) { return PAD + (F2_MAX - f2) / (F2_MAX - F2_MIN) * (W - 2*PAD); }
+
+let currentLang = 'ipa';
+let sexScale = 1.0;
+
+function getReferenceVowels() {
+  return VOWEL_SETS[currentLang].vowels.map(v => ({
+    ipa: v.ipa,
+    f1: v.f1 * sexScale,
+    f2: v.f2 * sexScale,
+  }));
+}
+
+function drawChart() {
+  cctx.clearRect(0, 0, W, H);
+  cctx.strokeStyle = '#bbb';
+  cctx.lineWidth = 1;
+  cctx.strokeRect(PAD, PAD, W - 2*PAD, H - 2*PAD);
+
+  cctx.font = '12px system-ui, sans-serif';
+  cctx.textAlign = 'center';
+  for (let f2 = 800; f2 <= 2400; f2 += 400) {
+    const x = f2ToX(f2);
+    cctx.strokeStyle = '#eee';
+    cctx.beginPath(); cctx.moveTo(x, PAD); cctx.lineTo(x, H - PAD); cctx.stroke();
+    cctx.fillStyle = '#888';
+    cctx.fillText(f2 + ' Hz', x, PAD - 8);
+  }
+  cctx.textAlign = 'right';
+  for (let f1 = 300; f1 <= 1000; f1 += 200) {
+    const y = f1ToY(f1);
+    cctx.strokeStyle = '#eee';
+    cctx.beginPath(); cctx.moveTo(PAD, y); cctx.lineTo(W - PAD, y); cctx.stroke();
+    cctx.fillStyle = '#888';
+    cctx.fillText(f1 + ' Hz', PAD - 8, y + 4);
+  }
+
+  cctx.fillStyle = '#444';
+  cctx.font = '13px system-ui, sans-serif';
+  cctx.textAlign = 'center';
+  cctx.fillText('F2 (front ←  → back)', W / 2, 24);
+  cctx.save();
+  cctx.translate(20, H / 2);
+  cctx.rotate(-Math.PI / 2);
+  cctx.fillText('F1 (close ↑  ↓ open)', 0, 0);
+  cctx.restore();
+
+  cctx.fillStyle = '#222';
+  cctx.font = '13px system-ui, sans-serif';
+  cctx.textAlign = 'left';
+  let label = VOWEL_SETS[currentLang].name;
+  if (sexScale !== 1.0) label += ' · ×' + sexScale.toFixed(2);
+  cctx.fillText(label, PAD, H - 18);
+
+  cctx.font = '20px serif';
+  cctx.textAlign = 'center';
+  cctx.textBaseline = 'middle';
+  for (const v of getReferenceVowels()) {
+    const x = f2ToX(v.f2), y = f1ToY(v.f1);
+    if (x < PAD - 20 || x > W - PAD + 20 || y < PAD - 20 || y > H - PAD + 20) continue;
+    cctx.fillStyle = '#d8d8d8';
+    cctx.beginPath(); cctx.arc(x, y, 16, 0, 2*Math.PI); cctx.fill();
+    cctx.fillStyle = '#444';
+    cctx.fillText(v.ipa, x, y + 1);
+  }
+}
+
+let audioCtx = null, analyser = null, micStream = null, running = false;
+const FFT_SIZE = 4096;
+const recent = [];
+const TRAIL_MS = 1000;
+const SMOOTH_FRAMES = 6;
+
+async function start() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+    });
+  } catch (e) {
+    document.getElementById('status').textContent = 'mic denied: ' + e.message;
+    return;
+  }
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const source = audioCtx.createMediaStreamSource(micStream);
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = FFT_SIZE;
+  analyser.smoothingTimeConstant = 0.0;
+  source.connect(analyser);
+  running = true;
+  document.getElementById('status').textContent = 'listening…';
+  document.getElementById('startBtn').textContent = 'Stop microphone';
+  loop();
+}
+
+function stop() {
+  running = false;
+  if (micStream) micStream.getTracks().forEach(t => t.stop());
+  if (audioCtx) audioCtx.close();
+  audioCtx = null; analyser = null; micStream = null;
+  document.getElementById('status').textContent = 'stopped';
+  document.getElementById('startBtn').textContent = 'Start microphone';
+}
+
+document.getElementById('startBtn').addEventListener('click',
+  () => { if (running) stop(); else start(); });
+
+document.getElementById('langSel').addEventListener('change', (e) => {
+  currentLang = e.target.value;
+  if (!running) drawChart();
+});
+
+document.getElementById('sexSel').addEventListener('change', (e) => {
+  sexScale = e.target.value === 'female' ? 1.17 : 1.0;
+  if (!running) drawChart();
+});
+
+function fft(re, im) {
+  const N = re.length;
+  for (let i = 1, j = 0; i < N; i++) {
+    let bit = N >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [re[i], re[j]] = [re[j], re[i]];
+      [im[i], im[j]] = [im[j], im[i]];
+    }
+  }
+  for (let len = 2; len <= N; len <<= 1) {
+    const ang = -2 * Math.PI / len;
+    const wRe = Math.cos(ang), wIm = Math.sin(ang);
+    for (let i = 0; i < N; i += len) {
+      let curRe = 1, curIm = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const a = i + k, b = a + len / 2;
+        const tRe = curRe * re[b] - curIm * im[b];
+        const tIm = curRe * im[b] + curIm * re[b];
+        re[b] = re[a] - tRe; im[b] = im[a] - tIm;
+        re[a] = re[a] + tRe; im[a] = im[a] + tIm;
+        const nRe = curRe * wRe - curIm * wIm;
+        const nIm = curRe * wIm + curIm * wRe;
+        curRe = nRe; curIm = nIm;
+      }
+    }
+  }
+}
+
+function cepstralEnvelope(logMag, sampleRate, fftSize) {
+  const N = logMag.length;
+  let M = 1;
+  while (M < 2 * (N - 1)) M <<= 1;
+
+  const re = new Float32Array(M);
+  const im = new Float32Array(M);
+  for (let i = 0; i < N; i++) re[i] = logMag[i];
+  for (let i = 1; i < N - 1; i++) re[M - i] = logMag[i];
+
+  fft(re, im);
+
+  const hzForK = (k) => (M * sampleRate) / (k * fftSize);
+  const kForHz = (hz) => Math.max(1, Math.round((M * sampleRate) / (hz * fftSize)));
+
+  const kF0Min = kForHz(500);
+  const kF0Max = kForHz(70);
+
+  let bestK = -1, bestVal = -Infinity;
+  for (let k = kF0Min; k <= kF0Max && k < M / 2; k++) {
+    if (re[k] > bestVal) { bestVal = re[k]; bestK = k; }
+  }
+
+  let mean = 0, count = 0;
+  for (let k = kF0Min; k <= kF0Max && k < M / 2; k++) {
+    mean += Math.abs(re[k]); count++;
+  }
+  mean = count ? mean / count : 0;
+
+  let f0 = null;
+  if (bestK > 0 && bestVal > Math.max(mean * 2.5, 1.5)) {
+    f0 = hzForK(bestK);
+  }
+
+  const cutoffHz = f0 ? f0 * 0.85 : 250;
+  const kCut = kForHz(cutoffHz);
+
+  for (let k = kCut; k < M - kCut; k++) {
+    re[k] = 0;
+    im[k] = 0;
+  }
+
+  for (let i = 0; i < M; i++) im[i] = -im[i];
+  fft(re, im);
+  for (let i = 0; i < M; i++) { re[i] /= M; im[i] = -im[i] / M; }
+
+  const env = new Float32Array(N);
+  for (let i = 0; i < N; i++) env[i] = re[i];
+
+  return { envelope: env, f0 };
+}
+
+function pickFormants(envelope, sampleRate, fftSize, f0) {
+  const binHz = sampleRate / fftSize;
+  const N = envelope.length;
+
+  const peaks = [];
+  for (let i = 2; i < N - 2; i++) {
+    if (envelope[i] > envelope[i-1] && envelope[i] > envelope[i+1] &&
+        envelope[i] > envelope[i-2] && envelope[i] > envelope[i+2]) {
+      peaks.push({ bin: i, hz: i * binHz, db: envelope[i] });
+    }
+  }
+  if (peaks.length < 2) return null;
+
+  const maxDb = Math.max(...peaks.map(p => p.db));
+  if (maxDb < -65) return null;
+
+  const f0Floor = f0 ? Math.max(f0 * 1.2, 180) : 180;
+
+  const f1Candidates = peaks.filter(p => p.hz >= f0Floor && p.hz <= 1100);
+  if (!f1Candidates.length) return null;
+  f1Candidates.sort((a, b) => b.db - a.db);
+  const f1Peak = f1Candidates[0];
+
+  const f2Candidates = peaks.filter(p =>
+    p.hz > f1Peak.hz + 300 && p.hz >= 700 && p.hz <= 3000);
+  if (!f2Candidates.length) return null;
+  f2Candidates.sort((a, b) => b.db - a.db);
+  const f2Peak = f2Candidates[0];
+
+  function refine(peak) {
+    const b = peak.bin;
+    const y0 = envelope[b-1], y1 = envelope[b], y2 = envelope[b+1];
+    const denom = (y0 - 2*y1 + y2);
+    const delta = denom !== 0 ? 0.5 * (y0 - y2) / denom : 0;
+    return (b + delta) * binHz;
+  }
+
+  return { f1: refine(f1Peak), f2: refine(f2Peak) };
+}
+
+function drawSpectrum(rawDb, envelope, sampleRate, fftSize, f0, f1, f2) {
+  sctx.clearRect(0, 0, SW, SH);
+  sctx.fillStyle = '#fafafa';
+  sctx.fillRect(0, 0, SW, SH);
+
+  const binHz = sampleRate / fftSize;
+  const maxHz = 4000;
+  const maxBin = Math.min(rawDb.length, Math.floor(maxHz / binHz));
+
+  const dbMin = -100, dbMax = -10;
+  const xFor = (bin) => (bin / maxBin) * SW;
+  const yFor = (db) => SH - ((db - dbMin) / (dbMax - dbMin)) * SH;
+
+  sctx.strokeStyle = '#eee';
+  sctx.fillStyle = '#aaa';
+  sctx.font = '10px system-ui';
+  sctx.textAlign = 'center';
+  for (let hz = 1000; hz <= 4000; hz += 1000) {
+    const x = xFor(hz / binHz);
+    sctx.beginPath(); sctx.moveTo(x, 0); sctx.lineTo(x, SH); sctx.stroke();
+    sctx.fillText(hz + ' Hz', x, SH - 2);
+  }
+
+  sctx.strokeStyle = '#bbb';
+  sctx.lineWidth = 1;
+  sctx.beginPath();
+  for (let i = 1; i < maxBin; i++) {
+    const x = xFor(i);
+    const y = yFor(Math.max(rawDb[i], dbMin));
+    if (i === 1) sctx.moveTo(x, y); else sctx.lineTo(x, y);
+  }
+  sctx.stroke();
+
+  if (envelope) {
+    sctx.strokeStyle = '#c83232';
+    sctx.lineWidth = 1.5;
+    sctx.beginPath();
+    for (let i = 1; i < maxBin; i++) {
+      const x = xFor(i);
+      const y = yFor(Math.max(envelope[i], dbMin));
+      if (i === 1) sctx.moveTo(x, y); else sctx.lineTo(x, y);
+    }
+    sctx.stroke();
+  }
+
+  function vline(hz, color, label) {
+    const x = xFor(hz / binHz);
+    sctx.strokeStyle = color;
+    sctx.lineWidth = 1;
+    sctx.beginPath(); sctx.moveTo(x, 0); sctx.lineTo(x, SH - 14); sctx.stroke();
+    sctx.fillStyle = color;
+    sctx.font = '11px system-ui';
+    sctx.textAlign = 'left';
+    sctx.fillText(label, x + 3, 12);
+  }
+  if (f0) vline(f0, '#3060c0', 'F0 ' + f0.toFixed(0));
+  if (f1) vline(f1, '#c83232', 'F1 ' + f1.toFixed(0));
+  if (f2) vline(f2, '#c83232', 'F2 ' + f2.toFixed(0));
+}
+
+function loop() {
+  if (!running) return;
+  drawChart();
+
+  const buf = new Float32Array(analyser.frequencyBinCount);
+  analyser.getFloatFrequencyData(buf);
+
+  const { envelope, f0 } = cepstralEnvelope(buf, audioCtx.sampleRate, FFT_SIZE);
+  const est = pickFormants(envelope, audioCtx.sampleRate, FFT_SIZE, f0);
+  const now = performance.now();
+
+  if (est) recent.push({ f1: est.f1, f2: est.f2, t: now });
+  while (recent.length && now - recent[0].t > TRAIL_MS) recent.shift();
+
+  for (const r of recent) {
+    const age = (now - r.t) / TRAIL_MS;
+    const alpha = (1 - age) * 0.35;
+    const x = f2ToX(r.f2), y = f1ToY(r.f1);
+    if (x < PAD || x > W - PAD || y < PAD || y > H - PAD) continue;
+    cctx.fillStyle = `rgba(200, 60, 50, ${alpha})`;
+    cctx.beginPath(); cctx.arc(x, y, 5, 0, 2*Math.PI); cctx.fill();
+  }
+
+  let smF1 = null, smF2 = null;
+  if (recent.length >= 2) {
+    const tail = recent.slice(-SMOOTH_FRAMES);
+    smF1 = tail.reduce((a, r) => a + r.f1, 0) / tail.length;
+    smF2 = tail.reduce((a, r) => a + r.f2, 0) / tail.length;
+    const x = f2ToX(smF2), y = f1ToY(smF1);
+    if (x >= PAD && x <= W - PAD && y >= PAD && y <= H - PAD) {
+      cctx.fillStyle = '#c83232';
+      cctx.beginPath(); cctx.arc(x, y, 9, 0, 2*Math.PI); cctx.fill();
+      cctx.strokeStyle = '#fff'; cctx.lineWidth = 2; cctx.stroke();
+    }
+  }
+
+  drawSpectrum(buf, envelope, audioCtx.sampleRate, FFT_SIZE,
+               f0, est ? est.f1 : null, est ? est.f2 : null);
+
+  document.getElementById('readout').textContent =
+    `F0: ${f0 ? f0.toFixed(0) + ' Hz' : '—'}   ` +
+    `F1: ${smF1 ? smF1.toFixed(0) + ' Hz' : '—'}   ` +
+    `F2: ${smF2 ? smF2.toFixed(0) + ' Hz' : '—'}`;
+
+  requestAnimationFrame(loop);
+}
+
+drawChart();
+</script>
+
+</body>
+</html>
